@@ -1,13 +1,19 @@
+
 name: Build Android APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Get project
@@ -19,10 +25,8 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v4
-with:
-  packages: 'platform-tools
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -30,16 +34,71 @@ with:
           gradle-version: '8.7'
 
       - name: Extract project
+        shell: bash
         run: |
-          mkdir source
+          set -e
+          mkdir -p source
           unzip -q project-source.zip -d source
 
+      - name: Find Android project
+        id: project
+        shell: bash
+        run: |
+          set -e
+
+          PROJECT_DIR=$(find source -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -printf '%h\n' | head -n 1)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_DIR="source"
+          fi
+
+          if [ ! -f "$PROJECT_DIR/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/build.gradle.kts" ] && \
+             [ ! -f "$PROJECT_DIR/settings.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            echo "Android Gradle project not found."
+            find source -maxdepth 4 -type f
+            exit 1
+          fi
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Project directory: $PROJECT_DIR"
+
       - name: Build APK
-        working-directory: source
-        run: gradle --no-daemon assembleDebug
+        shell: bash
+        run: |
+          set -e
+          cd "${{ steps.project.outputs.dir }}"
+
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew --no-daemon assembleDebug
+          else
+            gradle --no-daemon assembleDebug
+          fi
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -e
+          APK=$(find "${{ steps.project.outputs.dir }}" \
+            -type f -name '*.apk' \
+            -path '*/outputs/apk/*' | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "APK file was not generated."
+            exit 1
+          fi
+
+          echo "APK generated successfully: $APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: balkh-admin-apk
-          path: source/app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            ${{ steps.project.outputs.dir }}/**/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 7
